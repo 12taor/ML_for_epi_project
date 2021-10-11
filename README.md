@@ -1,2 +1,4 @@
 # ML_for_epi_project
 Final project for the course, Introduction to Machine Learning for Epidemiology
+
+This repo includes code that was adapted from my final project for the course, Introduction to Machine Learning for Epidemiology, which I took in spring 2021 as part of my Master of Public Health. For this analysis, a synthetic dataset from the Exposome Data Challenge Event of the Helix Project (https://www.isglobal.org/-/exposome-data-analysis-challenge) was used. I constructed research questions that could be answered using these data. For Part 1, I performed an unsupervised analysis and for Part 2, I performed a supervised analysis. 

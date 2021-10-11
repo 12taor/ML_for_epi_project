@@ -1,0 +1,368 @@
+---
+title: "final_project"
+author: "Rachel Tao"
+date: "4/14/2021"
+output: github_document
+---
+
+The following is adapted from my final project for the course, Introduction to Machine Learning for Epidemiology, which I took in spring 2021 as part of my Master of Public Health. For this analysis, a synthetic dataset from the Exposome Data Challenge Event of the Helix Project (https://www.isglobal.org/-/exposome-data-analysis-challenge) was used. I constructed research questions that could be answered using these data. For Part 1, I performed an unsupervised analysis and for Part 2, I performed a supervised analysis. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries and data
+
+```{r cars}
+library(tidyverse)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+library(ggcorrplot)
+library(gplots)
+library(GGally)
+library(stats)
+library(factoextra)
+library(devtools)
+install_github("vqv/ggbiplot")
+library(ggbiplot)
+library(randomForest)
+library(kernlab)
+
+
+
+load("./data/exposome.RData")
+
+studydata <- 
+  merge(exposome, phenotype, by = "ID") %>% 
+  merge(covariates, by = "ID") %>% 
+  as_tibble()
+
+```
+
+## Explore Data
+
+```{r}
+
+#view(codebook)
+
+# there is a mix of categorical and continuous variables, categorical variables
+# are factors
+
+summary(studydata)
+
+# there is no missing data
+
+sapply(studydata, function(x) sum(is.na(x))/nrow(studydata))
+
+summary(studydata$hs_bmi_c_cat)
+
+# 13 children are thin, 904 children are normal weight, 253 children are overweight,
+# and 131 children are obese.
+
+```
+
+## Part 1
+
+### Question 1: Research Question
+
+Do certain maternal dietary patterns during pregnancy cause childhood overweight/obesity (age 6-11)?
+
+For this analysis, I select only the features for dietary intake of the mother during pregnancy (excluding postnatal dietary pattern features) because my research question is specifically about maternal dietary patterns during pregnancy. Then, I perform Principal Components Analysis to identify dietary patterns. Using a scree plot, I select the components that have the highest proportion of variance explained. If the scree plot is difficult to read or there is not a natural 'elbow' I will select the components that sum to 75% of the percent variance explained. Principal component scores will be calculated, and each component will be included as a predictor in a logistic regression model (overweight/obese vs. normal weight).
+
+### Question 2: PCA analysis
+```{r}
+# select perinatal dietary pattern features
+part1_data <- read_csv("./data/diet_data.csv")
+
+part1_data <- part1_data %>% 
+  select(h_cereal_preg_Ter,
+         h_dairy_preg_Ter,
+         h_fastfood_preg_Ter,
+         h_fish_preg_Ter,
+         h_fruit_preg_Ter,
+         h_legume_preg_Ter,
+         h_meat_preg_Ter,
+         h_veg_preg_Ter)
+
+summary(part1_data)
+
+colMeans(part1_data, na.rm = TRUE)
+apply(part1_data, 2, sd, na.rm = TRUE)
+# since the means and SD are quite different, we will center and scale
+
+# execute PCA
+diet_pca <- prcomp( ~., data = part1_data, center = TRUE, scale = TRUE, na.action = na.omit)
+
+# Compare sds used to scale with the sds above to ensure they are close.
+diet_pca$scale
+
+# Generate scree plot
+fviz_eig(diet_pca)
+
+# there is not a very clear elbow in the scree plot, so will use percent variance 
+# explained to select components
+
+# view results of PCA.
+summary(diet_pca)
+
+# the first 5 components explain 75% of the variance
+
+#Identify how features loaded on the different components
+diet_pca$rotation
+
+ggbiplot(diet_pca)
+
+```
+
+### Question 3: Describe outputs in terms of input features
+
+ - PC1 loads high for cereal and vegetable consumption, low for legume, fastfood
+ - PC2 loads high for vegetable, fruit, and fastfood consumption, low for dairy, meat
+ - PC3 loads high for cereal consumption only, low for fish, meat, fruit
+ - PC4 loads high for meat, vegetables and fastfood consumption, low for fruit, dairy
+ - PC5 loads high for meat, fruit, cereal and fastfood consumption, low for fish.
+
+PC1 could represent a plant-based diet or a mediterranean diet. PC2 is hard to interpret, as it seems as though this could be a vegan or vegetarian diet based on high vegetable and fruit loadings and low dairy and meat loadings, but seems somewhat unlikely since it is also high in fastfood consumption, which tends to be low in vegetarian options. PC3 is a carbohydrate dominated diet. PC4 and PC5 are relatively similar, but PC5 loads higher for meat and fastfood consumption, and  may be less healthy.
+
+Based on these loadings, I would expect in a supervised analysis PC5 might be associated with overweight/obesity at age 6-11, as might PC4 and PC3. I would not expect PC1 to be associated with overweight/obesity, as this seems to represent a healthy diet. PC2 is hard to predict, given both healthy vegetable and fruit consumption alongside fastfood consumption.
+
+## Part 2
+
+### Research Question
+
+The following is a fictional intervention I came up with for the purpose of this project:
+
+Pregnancy, infancy, and early childhood exposures can have extreme influence on later-life development of overweight or obesity. Because of this, early childhood and family-level interventions are being developed to introduce strategies for healthy eating and physical activity early on. These families will be followed through the program, and if the interventions are not successful, children will be referred to pediatric bariatric surgery practices, where they can be evaluated by clinicians for eligibility for bariatric surgery. This program has a two-pronged approach: 1) early, non-clinical intervention and 2) identification of children who should be evaluated for bariatric surgery, if desired. For both elements, it is important to recruit patients in a targeted, unbiased way, because this program will bring children to resources that their families may not otherwise have access to or know about.
+
+I will construct a risk score for childhood overweight/obesity (age 6-11) to be used to identify families that should be eligible for the initial childhood intervention program. 
+
+Pipeline:
+
+1. Load and subset the data.
+
+2. Partition data into a 70/30 training/testing split.
+
+3. Construct two models in the training set using each of the two algorithms to predict overweight, varying mtry for RF and the cost parameter for SVC.
+
+4. Compare accuracy across the two models in the training set. 
+
+5. Output predicted probabilities from each of the models applied within the testing set. 
+
+6. Plot and compare calibration curves across the two algorithms. 
+
+7. Calibrate the predicted probabilities from SVC and Random Forest using two common methods.
+
+8. Plot and compare the new calibration curves across the three algorithms.
+
+
+
+```{r}
+set.seed(100)
+
+# remove other outcomes and time-varying features measured at the same time as the outcome
+studydata <- studydata %>% 
+  select(-hs_zbmi_who, 
+         -hs_correct_raven, 
+         -hs_Gen_Tot, 
+         -hs_asthma,
+         -hs_c_height_None,
+         -hs_c_weight_None,
+         -hs_child_age_None,
+         -e3_yearbir_None,
+         -h_cohort) %>% 
+  filter(hs_bmi_c_cat != 1)
+
+# since we are interested in overweight/obesity, we will omit the 13 children who
+# are clinically 'thin' and dichotomize bmi_c_cat
+
+studydata$hs_bmi_c_cat <- fct_recode(studydata$hs_bmi_c_cat, NULL = "1", normal = "2", overweight = "3", overweight = "4")
+
+#Partition data for use in demonstration
+train_indices <- createDataPartition(y = studydata$hs_bmi_c_cat, p = 0.7, list = FALSE)
+train_data <- studydata[train_indices, ]
+test_data <- studydata[-train_indices, ]
+```
+
+
+### Model 1: Random Forest 
+
+```{r}
+# Try mtry of all, half of all, sqrt of all, 
+# Try ntree of 100, 300, 500
+feat_count <- c((ncol(train_data) - 1), (ncol(train_data) - 1)/2, sqrt(ncol(train_data) - 1))
+small_grid_rf <- expand.grid(mtry = feat_count)
+
+train_control <- trainControl(method = "cv", number = 5, sampling = "down")
+
+tree_num <- seq(100, 500, by = 200)
+results_trees <- list()
+for (ntree in tree_num) {
+  set.seed(100)
+    rf_obesity <- train(hs_bmi_c_cat ~., data = train_data, method = "rf", trControl = train_control, metric = "Accuracy", tuneGrid = small_grid_rf, importance = TRUE, ntree = ntree)
+    index <- toString(ntree)
+  results_trees[[index]] <- rf_obesity$results
+}
+
+output <- bind_rows(results_trees, .id = "ntrees")
+best_tune <- output[which.max(output[,"Accuracy"]),]
+best_tune$mtry
+results_trees
+mtry_grid <- expand.grid(.mtry = best_tune$mtry)
+
+set.seed(100)
+
+feat_count2 <- seq(100, 120, by = 1)
+bigger_grid_rf <- expand.grid(mtry = feat_count2)
+
+rf_obesity2 <- train(hs_bmi_c_cat~., data = train_data, method = "rf", trControl = train_control, metric = "Accuracy", tuneGrid = bigger_grid_rf, importance = TRUE, ntree = 300)
+
+results_trees <- rf_obesity2$results
+output <- bind_rows(results_trees, .id = "ntrees")
+best_tune <- output[which.max(output[,"Accuracy"]),]
+best_tune$mtry
+results_trees
+mtry_grid <- expand.grid(.mtry = best_tune$mtry)
+
+
+rf_final <- train(hs_bmi_c_cat~., data = train_data, method = "rf", trControl = train_control, metric = "Accuracy", tuneGrid = mtry_grid, importance = TRUE, ntree = as.numeric(best_tune$ntrees))
+
+confusionMatrix(rf_final)
+varImp(rf_final)
+varImpPlot(rf_final$finalModel)
+rf_final
+
+```
+
+### Model 2: Support Vector Classifier
+
+```{r}
+set.seed(100)
+
+train_control <- trainControl(method = "cv", number = 5, sampling = "down", classProbs = TRUE)
+
+#Repeat expanding the grid search
+set.seed(100)
+
+svc_obesity <- train(hs_bmi_c_cat ~ ., data = train_data, method = "svmLinear", trControl = train_control, preProcess = c("center", "scale"), probability = TRUE, tuneGrid = expand.grid(C = seq(0.0001, 100,  length = 10)))
+
+svc_obesity$bestTune
+svc_obesity$results
+confusionMatrix(svc_obesity)
+
+svc_obesity2 <- train(hs_bmi_c_cat ~ ., data = train_data, method = "svmLinear", trControl = train_control, preProcess = c("center", "scale"), probability = TRUE, tuneGrid = expand.grid(C = seq(0.00001,0.0001 ,  length = 10)))
+
+svc_obesity2$bestTune
+svc_obesity2$results
+confusionMatrix(svc_obesity2)
+
+svc_final <- svc_obesity
+
+
+```
+
+Before calibration, SVC appears to produce more accurate predictions than random forest. Accuracy using SVC was 64.97%, whereas accuracy using random forest was 58.98%. Sensitivity also appears to be higher using SVC, as the percentage of false negatives is 10.6% for SVC and 12.9% for RF.
+
+### Output predicted probabilities from each of the two models applied within the testing set. 
+
+```{r}
+
+#Predict in test-set and output probabilities
+rf_probs <- predict(rf_final, test_data, type = "prob")
+
+#Pull out predicted probabilities for overweight
+rf_pp <- rf_probs[,2]
+
+svc_probs <- predict(svc_final, test_data, type = "prob")
+svc_pp <- svc_probs[,2]
+
+```
+
+### Plot and compare calibration curves for both algorithms. 
+
+```{r}
+pred_prob <- data.frame(Class = test_data$hs_bmi_c_cat, rf = rf_pp, svc = svc_pp)
+
+calplot <- (calibration(Class ~ rf + svc, data = pred_prob, class = "overweight", cuts = 10))
+
+xyplot(calplot, auto.key = list(columns = 2))
+```
+
+### Calibrate the probabilities from SVC and RF
+
+Partition testing data into 2 sets: set to train calibration and then set to evaluate results
+
+Method 1: Platt's Scaling-train a logistic regression model on the outputs of your classifier
+
+
+```{r}
+
+set.seed(100)
+cal_data_index <- test_data$hs_bmi_c_cat %>% 
+  createDataPartition(p = 0.5, list = F)
+cal_data <- test_data[cal_data_index, ]
+final_test_data <- test_data[-cal_data_index, ]
+
+#Calibration of RF
+
+#Predict on test-set without scaling to obtain raw pred prob in test set
+rf_probs_nocal <- predict(rf_final, final_test_data, type = "prob")
+rf_pp_nocal <- rf_probs_nocal[,2]
+
+#Apply model developed on training data to calibration dataset to obtain predictions
+rf_probs_cal <- predict(rf_final, cal_data, type = "prob")
+rf_pp_cal <- rf_probs_cal[,2]
+
+#Add to dataset with actual values from calibration data
+calibrf_data_frame <- data_frame(rf_pp_cal, cal_data$hs_bmi_c_cat)
+colnames(calibrf_data_frame) <- c("x", "y")
+
+#Use logistic regression to model predicted probabilities from calibration data to actual vales
+calibrf_model <- glm(y ~ x, data = calibrf_data_frame, family = binomial)
+
+#Apply calibration model above to raw predicted probabilities from test set
+data_test_rf <- data_frame(rf_pp_nocal)
+colnames(data_test_rf) <- c("x")
+platt_data_rf <- predict(calibrf_model, data_test_rf, type = "response")
+
+platt_prob_rf <- data_frame(Class = final_test_data$hs_bmi_c_cat, rf.platt = platt_data_rf, rf = rf_pp_nocal)
+
+calplot_rf <- (calibration(Class ~ rf.platt + rf, data = platt_prob_rf, class = "overweight", cuts = 10))
+xyplot(calplot_rf, auto.key = list(columns = 2))
+
+#Calibration of SVC
+
+#Predict on test-set without scaling
+svc_nocal <- predict(svc_final,final_test_data, type = "prob")
+svc_pp_nocal <- svc_nocal[,2]
+
+
+#Apply model developed on training data to calibration dataset to obtain predictions
+svc_cal <- predict(svc_final,cal_data, type = "prob")
+svc_pp_cal <- svc_cal[,2]
+
+#Add to dataset with actual values from calibration data
+
+calib_data_frame <- data_frame(svc_pp_cal, cal_data$hs_bmi_c_cat)
+colnames(calib_data_frame) <- c("x", "y")
+calib_model <- glm(y ~ x, data = calib_data_frame, family = binomial)
+
+#Predict on test set using model developed in calibration
+data_test <- data_frame(svc_pp_nocal)
+colnames(data_test) <- c("x")
+platt_data <- predict(calib_model, data_test, type = "response")
+
+platt_prob <- data_frame(Class = final_test_data$hs_bmi_c_cat, svc.platt = platt_data, svc = svc_pp_nocal)
+
+calplot_svc <- (calibration(Class ~ svc.platt + svc, data = platt_prob, class = "overweight", cuts = 10))
+xyplot(calplot_svc, auto.key = list(columns = 2))
+
+
+```
+
+Based on the calibration plots, the risk scores from SVC are better calibrated than the risk scores from random forest. This makes sense because prior to calibration, the probabilities were (0,1) for random forest, whereas they were actual percentages for SVC. 
+
+For this research question, accuracy, calibration and sensitivity are important metrics for deciding which algorithm to use. Sensitivity is more important than specificity because someone who is not overweight but was predicted to be would simply be turned away from the intervention on examination, whereas someone who is overweight but not predicted to be would not be outreached, and would not have the opportunity to be in the program. Based on the accuracy, sensitivity, and calibration plots for calibrated risk scores, I would choose to use SVC and not random forest for this analysis because SVC performed better than RF on all three of these metrics.
+
+It is important to note that even though I would choose SVC over RF here, neither algorithm produced predictions as accurate or sensitive as I would hope for. Importantly, the SVC model is well calibrated up until about 50%, but no individuals in the test set received a risk score greater than 50%, so it is poorly calibrated after that point. This indicates that the algorithm is much better at predicting normal weight than overweight. These risk scores might still be usable for the intervention, but it would be necessary to use a risk score that represented less than 50% probability of the outcome to determine eligibility (perhaps a risk score of 30% or higher would determine eligibility). We would have to recognize that many of those reached out to would not have overweight, and the risk score approach would still force us to cast a wide net in terms of recruitment.
